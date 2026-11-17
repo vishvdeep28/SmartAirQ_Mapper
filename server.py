@@ -3,17 +3,18 @@ import sqlite3
 import csv
 import io
 import os
+import math
 from datetime import datetime
 from dotenv import load_dotenv
 
 # Load local environment variables from .env if present
-ENV_PATH = os.path.join(os.path.dirname(__file__), '.env')
+ENV_PATH = os.environ.get('SMARTAIRQ_ENV_PATH', os.path.join(os.path.dirname(__file__), '.env'))
 load_dotenv(ENV_PATH)
 
 # Initialize Flask with static folder configured
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
-DB_PATH = os.path.join(os.path.dirname(__file__), 'air_quality.db')
+DB_PATH = os.environ.get('SMARTAIRQ_DB_PATH', os.path.join(os.path.dirname(__file__), 'air_quality.db'))
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -52,14 +53,30 @@ def receive_data():
     if not data:
         return jsonify({"error": "No JSON payload received"}), 400
     
-    node_id = data.get('node_id', 'unknown_node')
-    lat = float(data.get('lat', 0.0) or 0.0)
-    lng = float(data.get('lng', 0.0) or 0.0)
-    pm25 = int(data.get('pm25', 0) or 0)
-    pm10 = int(data.get('pm10', 0) or 0)
-    aqi = int(data.get('aqi', 0) or 0)
-    temp = float(data.get('temp', 0.0) or 0.0)
-    humidity = float(data.get('humidity', 0.0) or 0.0)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Payload must be a JSON object"}), 400
+    try:
+        node_id = data.get('node_id', 'unknown_node')
+        if not isinstance(node_id, str) or not node_id.strip() or len(node_id) > 100:
+            raise ValueError('node_id must be a nonempty string of at most 100 characters')
+        node_id = node_id.strip()
+        def number(name, default, minimum, maximum):
+            value = data.get(name, default)
+            if isinstance(value, bool) or value is None:
+                raise ValueError(f'{name} must be a finite number')
+            value = float(value)
+            if not math.isfinite(value) or not minimum <= value <= maximum:
+                raise ValueError(f'{name} must be between {minimum} and {maximum}')
+            return value
+        lat = number('lat', 0, -90, 90)
+        lng = number('lng', 0, -180, 180)
+        pm25 = number('pm25', 0, 0, 100000)
+        pm10 = number('pm10', 0, 0, 100000)
+        aqi = number('aqi', 0, 0, 1000)
+        temp = number('temp', 0, -100, 100)
+        humidity = number('humidity', 0, 0, 100)
+    except (TypeError, ValueError, OverflowError) as error:
+        return jsonify({"error": str(error)}), 400
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     conn = get_db_connection()
@@ -92,20 +109,21 @@ def send_data_to_dashboard():
 # 3. Dedicated endpoint for map and analytics (HTTP GET)
 @app.route('/api/map-data', methods=['GET'])
 def get_map_data():
-    limit = request.args.get('limit', default=100, type=int)
+    limit = max(1, min(request.args.get('limit', default=100, type=int), 1000))
+    node_id = request.args.get('node_id', '').strip()
     conn = get_db_connection()
     c = conn.cursor()
     
-    # Latest reading
-    c.execute('''SELECT * FROM readings ORDER BY id DESC LIMIT 1''')
-    latest_row = c.fetchone()
-    latest = dict(latest_row) if latest_row else None
-    
-    # Historical readings in chronological order (for Chart.js trends)
-    c.execute('''SELECT * FROM readings ORDER BY id DESC LIMIT ?''', (limit,))
+    # Filtering applies consistently to both the latest packet and its history.
+    where = ' WHERE node_id = ?' if node_id else ''
+    params = (node_id,) if node_id else ()
+    c.execute('SELECT * FROM readings' + where + ' ORDER BY id DESC LIMIT ?', params + (limit,))
     history_rows = c.fetchall()
+    latest = dict(history_rows[0]) if history_rows else None
+    c.execute('SELECT node_id, MAX(timestamp) AS last_seen, COUNT(*) AS count FROM readings GROUP BY node_id ORDER BY node_id')
+    nodes = [dict(row) for row in c.fetchall()]
     conn.close()
-    
+
     history = [dict(ix) for ix in reversed(history_rows)]
     
     return jsonify({
@@ -114,7 +132,8 @@ def get_map_data():
         "last_received": latest['timestamp'] if latest else None,
         "latest": latest,
         "history": history,
-        "count": len(history)
+        "count": len(history),
+        "nodes": nodes
     })
 
 # 4. Export database records to a downloadable CSV (HTTP GET)
@@ -135,7 +154,7 @@ def export_csv():
                      'PM10 (ug/m3)', 'AQI', 'Temperature (C)', 'Humidity (%)', 'Timestamp'])
     
     for row in rows:
-        writer.writerow([row['id'], row['node_id'], row['lat'], row['lng'],
+        writer.writerow([row['id'], ('\"' + row['node_id']) if row['node_id'] and row['node_id'].startswith(('=', '+', '-', '@', '\t', '\r', '\n')) else row['node_id'], row['lat'], row['lng'],
                          row['pm25'], row['pm10'], row['aqi'], row['temp'], 
                          row['humidity'], row['timestamp']])
     
@@ -153,6 +172,8 @@ def export_csv():
 @app.route('/api/config', methods=['GET'])
 def get_client_config():
     carto_key = os.environ.get('CARTO_API_KEY', '').strip()
+    if carto_key == 'your_carto_api_key_here':
+        carto_key = ''
     map_style = os.environ.get('CARTO_MAP_STYLE', 'voyager').strip()
     return jsonify({
         "status": "success",
@@ -161,11 +182,13 @@ def get_client_config():
         "cartoMapStyle": map_style
     })
 
+# Initialize for both WSGI imports and direct execution.
+init_db()
+
 if __name__ == '__main__':
-    init_db()
     host = os.environ.get('SERVER_HOST', '0.0.0.0')
     port = int(os.environ.get('SERVER_PORT', 5000))
-    server_ip = os.environ.get('SERVER_IP', '10.49.96.26')
+    server_ip = os.environ.get('SERVER_IP', '<your-computer-LAN-IP>')
 
     print("=" * 65)
     print("Starting Local Flask Server for Smart Air Quality Mapper...")

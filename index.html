@@ -1,253 +1,59 @@
-<!DOCTYPE html>
-<html lang="en" data-theme="dark">
+﻿<!DOCTYPE html>
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Smart Air Quality Monitor & Telemetry Mapper</title>
-  
-  <!-- Favicon / SVG -->
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2338bdf8'><path d='M12 3a9 9 0 0 0-9 9 9 9 0 0 0 9 9 9 9 0 0 0 9-9 9 9 0 0 0-9-9zm0 16a7 7 0 1 1 7-7 7 7 0 0 1-7 7z'/></svg>">
-
-  <!-- Leaflet CSS for Map Rendering -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Smart AirQ brings your sensor network, air quality readings and environmental trends into one clear view.">
+  <meta name="theme-color" content="#f5f7f8">
+  <title>Overview · Smart AirQ Mapper</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-
-  <!-- Design Tokens & Main Styles -->
-  <link rel="stylesheet" href="static/css/tokens.css">
-  <link rel="stylesheet" href="static/css/style.css">
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
-  <div class="app-container">
-    
-    <!-- ======================================================================
-         2.1 The Header (Top Bar)
-         ====================================================================== -->
-    <header class="app-header">
-      <!-- Left: Logo & Brand -->
-      <div class="brand-section">
-        <div class="brand-icon-wrapper" title="Smart Air Quality Mapper">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M6 18h8a4 4 0 0 0 0-8 6 6 0 0 0-11-2 4 4 0 0 0 1 8"/>
-            <path d="M19 12a3 3 0 0 1 0 6H17"/>
-          </svg>
-        </div>
-        <div class="brand-titles">
-          <h1>Smart AirQ Mapper</h1>
-          <span class="brand-subtitle">Environmental Telemetry & Spatial AoE Heatmap</span>
-        </div>
-      </div>
-
-      <!-- Center: Global Environmental Score (1-10) -->
-      <div class="header-score-center">
-        <div class="score-badge" title="Overall Environmental Quality Score (1-10)">
-          <div class="score-circle" id="globalScoreCircle">--</div>
-          <div class="score-meta">
-            <span class="score-label">Environmental Score</span>
-            <span class="score-status" id="globalScoreStatus">Evaluating...</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Right: System Status, CSV Download, Theme Toggle -->
-      <div class="header-actions">
-        <!-- Glowing Server Status Indicator -->
-        <div class="status-indicator-badge" title="Flask Backend Connectivity Status">
-          <span class="status-dot connecting" id="statusDot"></span>
-          <span id="statusText">Connecting...</span>
-          <span style="opacity: 0.5">•</span>
-          <span id="lastPacketText">Waiting...</span>
-        </div>
-
-        <!-- Export CSV Button -->
-        <a id="btnExport" href="/api/export-csv" class="btn-export" title="Download all historical readings as CSV">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-            <polyline points="7 10 12 15 17 10"/>
-            <line x1="12" y1="15" x2="12" y2="3"/>
-          </svg>
-          <span>Download CSV</span>
-        </a>
-
-        <!-- Dark/Light Theme Toggle -->
-        <button id="themeToggle" class="btn-theme" title="Toggle Light / Dark Mode" aria-label="Toggle theme">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="5"/>
-            <line x1="12" y1="1" x2="12" y2="3"/>
-            <line x1="12" y1="21" x2="12" y2="23"/>
-            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
-            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-            <line x1="1" y1="12" x2="3" y2="12"/>
-            <line x1="21" y1="12" x2="23" y2="12"/>
-            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
-            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-          </svg>
-        </button>
-      </div>
-    </header>
-
-    <!-- ======================================================================
-         Main Layout: Map Panel + Analytics Sidebar
-         ====================================================================== -->
-    <main class="app-content">
-      
-      <!-- 2.2 The Mapping Interface (Left/Center Panel) -->
-      <section class="map-panel">
-        <div id="map"></div>
-
-        <!-- Floating chips on Map -->
-        <div class="map-floating-overlay">
-          <div class="map-chip">
-            <span class="chip-dot"></span>
-            <span id="activeNodeChip">Node: Initializing...</span>
-          </div>
-          <div class="map-chip">
-            <span id="geoSourceChip">📍 Resolving Location...</span>
-          </div>
-          <div class="map-chip" title="Exact timestamp when this sensor reading was captured">
-            <span>🕒 Last Sensor Packet: <strong id="sensorTimestampChip" style="color: var(--accent-primary);">Awaiting telemetry...</strong></span>
-          </div>
-
-          <!-- Live GPS Controls -->
-          <div style="display: flex; gap: 8px; pointer-events: auto; margin-top: 4px;">
-            <button id="btnRefreshGPS" class="btn-map-action" title="Fetch fresh live GPS coordinates from your laptop/device">
-              📡 Refresh Live Device GPS
-            </button>
-          </div>
-        </div>
-
-        <!-- Heatmap Legend -->
-        <div class="map-legend">
-          <div class="legend-title">AoE Diffusion Scale (100m Radius)</div>
-          <div class="legend-scale">
-            <div class="legend-step"><span class="legend-color" style="background:#10b981;"></span> 9-10 Exc</div>
-            <div class="legend-step"><span class="legend-color" style="background:#22c55e;"></span> 7-8 Good</div>
-            <div class="legend-step"><span class="legend-color" style="background:#eab308;"></span> 5-6 Mod</div>
-            <div class="legend-step"><span class="legend-color" style="background:#f97316;"></span> 3-4 Unh</div>
-            <div class="legend-step"><span class="legend-color" style="background:#ef4444;"></span> 1-2 Haz</div>
-          </div>
-        </div>
+<a class="skip-link" href="#main">Skip to dashboard</a>
+<div class="shell">
+  <aside class="navigation">
+    <a class="brand" href="/" aria-label="Smart AirQ home"><img src="/static/icon.svg" width="36" height="36" alt=""><span>Smart AirQ<small>ENVIRONMENTAL INTELLIGENCE</small></span></a>
+    <p class="nav-label">WORKSPACE</p>
+    <nav aria-label="Main navigation">
+      <a class="nav-item selected" href="#main"><span aria-hidden="true">▦</span> Overview <span class="nav-tag">LIVE</span></a>
+      <a class="nav-item" href="#network"><span aria-hidden="true">◎</span> Sensor map</a>
+      <a class="nav-item" href="#trends"><span aria-hidden="true">↗</span> Analytics</a>
+      <a class="nav-item" href="#readings"><span aria-hidden="true">▤</span> Readings</a>
+    </nav>
+    <div class="network-note"><span class="mini-dot"></span><strong>Your environment, in focus.</strong><p>Real sensor data. Open maps.<br>A clearer picture of the air around you.</p><span class="outline-label">BEP GROUP PROJECT</span></div>
+    <div class="nav-footer"><span class="avatar">AQ</span><div>Air quality workspace<small>Smart Air Quality Mapper</small></div></div>
+  </aside>
+  <div class="workspace">
+    <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong>Overview</strong></div><div class="top-actions"><span class="connection" role="status"><i id="statusDot" class="status-dot connecting"></i><span id="statusText">Connecting</span></span><button id="themeToggle" class="icon-button" aria-label="Switch to dark theme" title="Change color theme">◐</button><span class="avatar small">AQ</span></div></header>
+    <main id="main">
+      <div class="page-heading"><div><div class="eyebrow"><span class="mini-dot"></span> AIR QUALITY MONITORING</div><h1>A little clarity. A better environment.</h1><p>Your sensor network and environmental insights, all in one place.</p></div><a class="button primary" id="btnExport" href="/api/export-csv"><span aria-hidden="true">↓</span> Export readings</a></div>
+      <div id="notice" class="notice" role="status">Connecting to your sensor network…</div>
+      <section class="metric-grid" aria-label="Latest sensor measurements">
+        <article class="metric-card"><div class="metric-top"><span>Air quality index</span><span class="metric-icon green">≋</span></div><div class="metric-number"><span id="aqiValue">—</span><small>AQI</small></div><div class="metric-bottom"><span class="pill" id="aqiCategory">Awaiting data</span><span>Sensor reported</span></div></article>
+        <article class="metric-card"><div class="metric-top"><span>Fine particles</span><span class="metric-icon blue">⠿</span></div><div class="metric-number"><span id="pm25Value">—</span><small>µg/m³</small></div><div class="metric-bottom"><span class="mini-dot blue-dot"></span><span>PM2.5 concentration</span></div></article>
+        <article class="metric-card"><div class="metric-top"><span>Temperature</span><span class="metric-icon orange">♧</span></div><div class="metric-number"><span id="tempValue">—</span><small>°C</small></div><div class="metric-bottom"><span class="mini-dot orange-dot"></span><span id="comfortLabel">Awaiting climate data</span></div></article>
+        <article class="metric-card"><div class="metric-top"><span>Relative humidity</span><span class="metric-icon purple">♧</span></div><div class="metric-number"><span id="humidityValue">—</span><small>%</small></div><div class="metric-bottom"><span class="mini-dot purple-dot"></span><span>Ambient moisture level</span></div></article>
       </section>
-
-      <!-- 2.3 The Analytics & Advisory Panel (Right Sidebar) -->
-      <aside class="sidebar-panel">
-
-        <!-- Dynamic Health Advisory Card -->
-        <div class="sidebar-card advisory-card" id="advisoryCard">
-          <div class="advisory-header">
-            <div class="advisory-icon" id="advisoryIcon">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-              </svg>
-            </div>
-            <div class="advisory-title" id="advisoryTitle">Health Advisory</div>
-          </div>
-          <p class="advisory-text" id="advisoryText">Analyzing air quality indices and meteorological telemetry...</p>
-        </div>
-
-        <!-- Live Metrics Grid -->
-        <div class="sidebar-card">
-          <div class="metrics-section-title">Live Sensor Telemetry</div>
-          <div class="metrics-grid">
-            
-            <!-- PM 2.5 -->
-            <div class="metric-card pm25">
-              <div class="metric-header">
-                <span class="metric-label">PM 2.5</span>
-                <span class="metric-unit">µg/m³</span>
-              </div>
-              <div class="metric-value" id="pm25Value">--</div>
-              <span class="metric-sub">Fine Inhalable Particles</span>
-            </div>
-
-            <!-- PM 10 -->
-            <div class="metric-card pm10">
-              <div class="metric-header">
-                <span class="metric-label">PM 10</span>
-                <span class="metric-unit">µg/m³</span>
-              </div>
-              <div class="metric-value" id="pm10Value">--</div>
-              <span class="metric-sub">Coarse Particulate Matter</span>
-            </div>
-
-            <!-- Temperature -->
-            <div class="metric-card temp">
-              <div class="metric-header">
-                <span class="metric-label">Temperature</span>
-                <span class="metric-unit">°C</span>
-              </div>
-              <div class="metric-value" id="tempValue">--</div>
-              <span class="metric-sub">Ambient Temperature</span>
-            </div>
-
-            <!-- Humidity -->
-            <div class="metric-card humidity">
-              <div class="metric-header">
-                <span class="metric-label">Humidity</span>
-                <span class="metric-unit">%</span>
-              </div>
-              <div class="metric-value" id="humidityValue">--</div>
-              <span class="metric-sub">Relative Humidity</span>
-            </div>
-
-          </div>
-        </div>
-
-        <!-- Live Climate & Comfort View (Section 3.3 Climate Modifier) -->
-        <div class="sidebar-card climate-box">
-          <div class="climate-header">
-            <span class="climate-title">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/>
-              </svg>
-              Climate Comfort
-            </span>
-            <span class="climate-badge" id="comfortLabel">Evaluating</span>
-          </div>
-
-          <div class="comfort-meter-container">
-            <div class="comfort-bar-track">
-              <div class="comfort-bar-fill" id="comfortFill"></div>
-            </div>
-            <div class="comfort-labels">
-              <span>Cool</span>
-              <span>Ideal</span>
-              <span>Hot / Humid</span>
-            </div>
-          </div>
-
-          <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:var(--text-secondary);">
-            <span>Heat Index:</span>
-            <span id="heatIndexText" style="font-weight:700; color:var(--text-primary);">-- °C</span>
-          </div>
-
-          <div class="climate-modifier-notice" id="climatePenaltyBadge">
-            ⚠️ Climate Penalty Applied: High Heat & Humidity
-          </div>
-        </div>
-
-        <!-- Historical Trend Graph -->
-        <div class="sidebar-card chart-card">
-          <div class="chart-header">
-            <div>
-              <div class="chart-title">Historical Trends</div>
-              <div class="chart-subtitle">PM2.5 & Temperature vs Time</div>
-            </div>
-          </div>
-          <div class="chart-wrapper">
-            <canvas id="trendsChart"></canvas>
-          </div>
-        </div>
-
-      </aside>
+      <div class="main-grid">
+        <section id="network" class="panel map-panel"><div class="panel-heading"><div><h2>Sensor network <span class="live-label"><span class="mini-dot"></span> LIVE VIEW</span></h2><p id="geoSourceChip">Jamnagar overview · waiting for sensor GPS</p></div><button id="btnFit" class="button compact">◎ Locate sensor</button></div><div class="map-wrap"><div id="map" aria-label="Sensor location map"></div><div class="map-overlay"><span class="mini-dot"></span><span id="activeNodeChip">No sensor selected</span></div><div class="map-legend"><span class="mini-dot"></span> Sensor position <span class="legend-divider">|</span> 100 m visual radius</div></div><div class="map-footer"><span id="mapStatus" role="status">OpenStreetMap · street basemap</span><div><button id="btnRefreshGPS" class="text-button">Use my location</button><label class="sr-only" for="basemap">Basemap</label><select id="basemap"><option value="osm">OpenStreetMap</option><option value="carto">CARTO (key required)</option></select></div></div></section>
+        <aside class="insight-stack">
+          <section class="panel score-panel"><div class="panel-heading"><h2>Environment snapshot</h2><span class="subtle">PROJECT SCORE</span></div><div class="score-ring" id="scoreRing"><div><strong id="globalScoreCircle">—</strong><span>out of 10</span></div></div><h3 id="globalScoreStatus">Waiting for a reading</h3><p class="score-caption">A project-specific indicator combining AQI and climate. Not a regulatory AQI scale.</p><div class="score-scale"><i></i><i></i><i></i><i></i><i></i></div><div class="scale-labels"><span>Needs attention</span><span>Excellent</span></div></section>
+          <section class="insight-card" id="advisoryCard"><span class="eyebrow">✧ FIELD INSIGHT</span><h3 id="advisoryTitle">Ready when your sensors are.</h3><p id="advisoryText">Connect an ESP32 node to see your latest air quality and climate readings here.</p><span class="insight-foot">Designed for environmental awareness</span></section>
+        </aside>
+        <section id="trends" class="panel trends-panel"><div class="panel-heading"><div><h2>Environmental trends</h2><p>Recent PM2.5 and temperature measurements</p></div><label class="select-label">Samples <select id="historyLimit"><option value="40">40 readings</option><option value="100">100 readings</option><option value="250">250 readings</option></select></label></div><div class="chart-wrapper"><canvas id="trendsChart" aria-label="PM2.5 and temperature over time" role="img"></canvas><p id="chartEmpty" class="chart-empty">Trends will appear when sensor readings arrive.</p></div></section>
+        <section class="panel detail-panel"><div class="panel-heading"><h2>Sensor details</h2><span class="metric-icon green">◎</span></div><dl><div><dt>Selected node</dt><dd id="detailNode">—</dd></div><div><dt>PM10</dt><dd><span id="pm10Value">—</span> µg/m³</dd></div><div><dt>Heat index estimate</dt><dd id="heatIndexText">—</dd></div><div><dt>Last reading</dt><dd id="sensorTimestampChip">Awaiting data</dd></div><div><dt>Freshness</dt><dd id="lastPacketText">No readings</dd></div></dl><p id="climatePenaltyBadge" class="climate-notice" hidden>High heat and humidity: project score reduced by one.</p></section>
+      </div>
+      <section id="readings" class="panel readings-panel"><div class="panel-heading"><div><h2>Recent readings <span id="readingCount" class="count-badge">0</span></h2><p>Latest telemetry from your connected nodes</p></div><div class="table-actions"><label class="sr-only" for="nodeFilter">Filter sensor node</label><select id="nodeFilter"><option value="">All sensor nodes</option></select><button id="refreshButton" class="button compact">↻ Refresh</button></div></div><div class="table-scroll"><table><thead><tr><th>Sensor node</th><th>Captured at</th><th>AQI</th><th>PM2.5 <small>µg/m³</small></th><th>PM10 <small>µg/m³</small></th><th>Temperature</th><th>Humidity</th></tr></thead><tbody id="readingsBody"><tr><td colspan="7" class="empty-cell">No readings yet. Connect a sensor to start monitoring.</td></tr></tbody></table></div></section>
+      <footer class="page-footer"><span><span class="mini-dot"></span> Smart AirQ Mapper <span class="footer-divider">/</span> Built for a more aware world.</span><span>Refreshes every 3 seconds · <a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noopener noreferrer">Report a map issue ↗</a></span></footer>
+      <noscript><p class="notice">Enable JavaScript for live telemetry, maps, filters and charts. <a href="/api/export-csv">Download readings as CSV</a>.</p></noscript>
     </main>
   </div>
-
-  <!-- Leaflet JS -->
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  
-  <!-- Chart.js for Historical Trends -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-
-  <!-- Application Bootstrap -->
-  <script type="module" src="static/js/app.js"></script>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script type="module" src="/static/js/app.js"></script>
 </body>
 </html>

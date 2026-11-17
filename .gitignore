@@ -40,3 +40,6 @@ desktop.ini
 # Node
 node_modules/
 npm-debug.log*
+
+.preview.db
+.worktrees/
