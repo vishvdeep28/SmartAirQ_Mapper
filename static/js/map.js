@@ -1,281 +1,107 @@
-/**
- * Leaflet Map Manager with AoE Heatmap Zone and Live Device GPS Tracking
- */
-
+/** OpenStreetMap first; device location is an explicit, labelled approximation. */
+export function validCoordinates(lat, lng) {
+  return typeof lat === 'number' && typeof lng === 'number' &&
+    Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 &&
+    Math.abs(lng) <= 180 && !(lat === 0 && lng === 0);
+}
 export class AirQualityMap {
-  constructor(containerId = "map") {
-    this.containerId = containerId;
-    this.map = null;
-    this.baseTileLayer = null;
-    this.aoeCircle = null;
-    this.centerMarker = null;
+  constructor(containerId = 'map') {
+    this.config = {};
+    this.currentCoords = null;
     this.deviceLiveCoords = null;
-    this.currentCoords = { lat: 20.5937, lng: 78.9629 }; // Temporary initial center
-    this.isUsingHardwareGps = false;
-    this.latestReading = null;
-    this.latestColorHex = "#10b981";
     this.hasInitialCentered = false;
-
-    // Clear any previous static location override
-    try {
-      localStorage.removeItem("smartairq-custom-location");
-    } catch (e) {}
-
-    this.initMap();
-    this.startLiveDeviceTracking();
-  }
-
-  initMap() {
     if (!window.L) {
-      console.error("Leaflet library not found on window.L");
+      document.getElementById(containerId).textContent = 'Map library unavailable. Check your internet connection; sensor readings remain available.';
       return;
     }
-
-    // Initialize Leaflet map
-    this.map = L.map(this.containerId, {
-      zoomControl: false,
-      attributionControl: true
-    }).setView([this.currentCoords.lat, this.currentCoords.lng], 14);
-
-    // Zoom control at bottom right
-    L.control.zoom({ position: "bottomright" }).addTo(this.map);
-
-    // Initial default Carto tile layer
-    this.setCartoConfig({ cartoMapStyle: "voyager" });
+    this.map = L.map(containerId, { zoomControl: false }).setView([22.4707, 70.0577], 12);
+    L.control.zoom({ position: 'bottomright' }).addTo(this.map);
+    this.setProvider('osm');
   }
-
-  /**
-   * Continuous high-accuracy device live GPS tracking
-   */
-  startLiveDeviceTracking() {
-    if ("geolocation" in navigator) {
-      // 1. Immediate fresh request
-      navigator.geolocation.getCurrentPosition(
-        (pos) => this.handleDeviceLocationSuccess(pos),
-        (err) => console.warn("Live device geolocation error:", err.message),
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
-      );
-
-      // 2. Watch position continuously as user/device moves
-      navigator.geolocation.watchPosition(
-        (pos) => this.handleDeviceLocationSuccess(pos),
-        (err) => {},
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
-      );
-    } else {
-      console.warn("Geolocation API is not supported by this browser.");
-    }
-  }
-
-  /**
-   * Force fresh location poll on demand (e.g., when clicking "Refresh Location" button)
-   */
-  requestFreshDeviceLocation() {
-    return new Promise((resolve) => {
-      if (!("geolocation" in navigator)) {
-        return resolve(this.currentCoords);
-      }
-
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          this.handleDeviceLocationSuccess(pos);
-          resolve(this.deviceLiveCoords);
-        },
-        (err) => {
-          console.warn("Manual location refresh failed:", err.message);
-          resolve(this.deviceLiveCoords || this.currentCoords);
-        },
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 8000 }
-      );
-    });
-  }
-
-  handleDeviceLocationSuccess(pos) {
-    const accuracy = Math.round(pos.coords.accuracy || 0);
-    this.deviceLiveCoords = {
-      lat: pos.coords.latitude,
-      lng: pos.coords.longitude,
-      accuracy: accuracy,
-      label: `📍 Device Live GPS (±${accuracy}m)`
-    };
-
-    // If hardware sensor GPS is 0,0, actively track device position
-    if (!this.isUsingHardwareGps) {
-      this.currentCoords = this.deviceLiveCoords;
-      if (this.latestReading) {
-        this.renderAoEZone(
-          this.deviceLiveCoords.lat,
-          this.deviceLiveCoords.lng,
-          this.latestReading,
-          this.latestColorHex,
-          this.deviceLiveCoords.label
-        );
-      } else if (!this.hasInitialCentered && this.map) {
-        this.map.setView([this.deviceLiveCoords.lat, this.deviceLiveCoords.lng], 15);
-        this.hasInitialCentered = true;
-      }
-    }
-  }
-
-  /**
-   * Configure Carto Basemap with Carto API key (?key=...) and style preset
-   */
   setCartoConfig(config = {}) {
-    if (!this.map) return;
-    const key = config.cartoApiKey ? config.cartoApiKey.trim() : "";
-    const style = config.cartoMapStyle || "voyager";
-
-    // Carto raster tile format: https://{s}.basemaps.cartocdn.com/rastertiles/{style}/{z}/{x}/{y}.png?key=...
-    let tileUrl = `https://{s}.basemaps.cartocdn.com/rastertiles/${style}/{z}/{x}/{y}.png`;
-    if (key) {
-      tileUrl += `?key=${encodeURIComponent(key)}`;
-    }
-
-    const options = {
-      maxZoom: 19,
-      subdomains: "abcd",
-      attribution: '&copy; <a href="https://carto.com/">CARTO</a>, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-    };
-
-    if (this.baseTileLayer) {
-      this.map.removeLayer(this.baseTileLayer);
-    }
-    this.baseTileLayer = L.tileLayer(tileUrl, options).addTo(this.map);
-
-    // Reliable fallback: if Carto encounters any tile error, fallback to OpenStreetMap so map is never blank
-    let fallbackDone = false;
-    this.baseTileLayer.on("tileerror", () => {
-      if (!fallbackDone) {
-        fallbackDone = true;
-        console.warn("Carto tile error detected, falling back to OpenStreetMap tiles.");
-        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-          maxZoom: 19,
-          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-        }).addTo(this.map);
-      }
-    });
-
-    if (this.aoeCircle) this.aoeCircle.bringToFront();
+    this.config = config;
+    if (this.osmFailed && this.provider === 'osm' && config.cartoApiKey?.trim()) this.setProvider('carto', true);
   }
-
-  /**
-   * Update map position based on telemetry and Geolocation Fallback Rule:
-   * IF lat and lng != 0.0: Plot AoE at hardware coordinates
-   * IF lat and lng == 0.0: Plot AoE dynamically at laptop/device's live GPS coordinates
-   */
-  async updateTelemetryLocation(reading, colorHex = "#10b981") {
+  notify(message) {
+    const el = document.getElementById('mapStatus');
+    if (el) el.textContent = message;
+  }
+  setProvider(provider, isFallback = false) {
     if (!this.map) return;
-    this.latestReading = reading;
+    const key = this.config.cartoApiKey?.trim();
+    if (provider === 'carto' && !key) {
+      const select = document.getElementById('basemap');
+      if (select) select.value = this.provider || 'osm';
+      this.notify('CARTO needs a configured basemap key. OpenStreetMap remains selected.');
+      return;
+    }
+    if (this.baseTileLayer) this.map.removeLayer(this.baseTileLayer);
+    const style = ['voyager', 'light_all', 'dark_all'].includes(this.config.cartoMapStyle) ? this.config.cartoMapStyle : 'voyager';
+    const url = provider === 'osm' ? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+      : `https://{s}.basemaps.cartocdn.com/rastertiles/${style}/{z}/{x}/{y}.png?key=${encodeURIComponent(key)}`;
+    const layer = L.tileLayer(url, {
+      maxZoom: 19, subdomains: 'abcd',
+      attribution: `${provider === 'carto' ? '&copy; <a href="https://carto.com/">CARTO</a> · ' : ''}&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors`
+    });
+    this.baseTileLayer = layer;
+    this.provider = provider;
+    this.osmFailed = false;
+    const select = document.getElementById('basemap');
+    if (select) select.value = provider;
+    let switched = false;
+    layer.on('tileerror', () => {
+      if (switched || this.baseTileLayer !== layer) return;
+      switched = true;
+      this.osmFailed = provider === 'osm';
+      if (!isFallback && (provider === 'carto' || this.config.cartoApiKey?.trim())) this.setProvider(provider === 'osm' ? 'carto' : 'osm', true);
+      else this.notify(provider === 'osm' && !this.config.cartoApiKey?.trim() ? 'OpenStreetMap tiles failed. CARTO fallback needs a configured basemap key. Retry OpenStreetMap using the selector.' : 'Map tiles unavailable. Check your connection or retry OpenStreetMap using the selector.');
+    });
+    layer.addTo(this.map);
+    this.notify(`${provider === 'osm' ? 'OpenStreetMap' : 'CARTO'}${isFallback ? ' · fallback basemap' : ' · street basemap'}`);
+  }
+  requestFreshDeviceLocation() {
+    return new Promise(resolve => {
+      if (!navigator.geolocation) { this.notify('Device location is unavailable in this browser.'); resolve(null); return; }
+      navigator.geolocation.getCurrentPosition(position => {
+        const { latitude: lat, longitude: lng, accuracy } = position.coords;
+        if (!validCoordinates(lat, lng)) { resolve(null); return; }
+        this.deviceLiveCoords = { lat, lng, label: `Device approximation (±${Math.round(accuracy)} m), not sensor GPS` };
+        this.notify(this.deviceLiveCoords.label);
+        this.map?.setView([lat, lng], 15);
+        if (this.latestReading) this.updateTelemetryLocation(this.latestReading, this.latestColorHex);
+        resolve(this.deviceLiveCoords);
+      }, error => {
+        this.notify(error.code === 1 ? 'Location permission denied. Sensor GPS is unaffected.' : 'Could not resolve device location. No location has been invented.');
+        resolve(null);
+      }, { enableHighAccuracy: true, maximumAge: 0, timeout: 8000 });
+    });
+  }
+  updateTelemetryLocation(reading, colorHex = '#20a685') {
+    if (this.latestReading?.node_id !== reading.node_id) this.hasInitialCentered = false;
+    this.latestReading = reading.node_id ? reading : null;
     this.latestColorHex = colorHex;
-
-    let targetLat = parseFloat(reading.lat || 0.0);
-    let targetLng = parseFloat(reading.lng || 0.0);
-
-    // Check if hardware coordinates are valid
-    if (targetLat !== 0.0 && targetLng !== 0.0 && !isNaN(targetLat) && !isNaN(targetLng)) {
-      this.isUsingHardwareGps = true;
-      this.currentCoords = { lat: targetLat, lng: targetLng, label: "🛰️ Hardware GPS" };
-      this.renderAoEZone(targetLat, targetLng, reading, colorHex, "🛰️ Hardware GPS");
-    } else {
-      // 3.1 Geolocation Fallback: dynamically resolve device's live coordinates
-      this.isUsingHardwareGps = false;
-      const coords = this.deviceLiveCoords || (await this.requestFreshDeviceLocation());
-      this.currentCoords = coords;
-      const sourceLabel = coords.label || "📍 Device Live GPS";
-      this.renderAoEZone(coords.lat, coords.lng, reading, colorHex, sourceLabel);
-    }
-
-    return {
-      coords: this.currentCoords,
-      isHardwareGps: this.isUsingHardwareGps,
-      label: this.currentCoords.label
-    };
-  }
-
-  /**
-   * 3.2 Area of Effect (AoE) Heatmap Radius:
-   * Polygon circle with default radius of 100 meters, fill opacity 40%
-   */
-  renderAoEZone(lat, lng, reading, colorHex, sourceLabel) {
-    const radiusMeters = 100;
-    const aqi = reading.aqi || 0;
-    const pm25 = reading.pm25 || 0;
-    const pm10 = reading.pm10 || 0;
-    const temp = reading.temp || 0;
-    const humidity = reading.humidity || 0;
-    const nodeId = reading.node_id || "node_1";
-    const timestamp = reading.timestamp || "Live";
-
-    // Popup content with telemetry
-    const popupContent = `
-      <div class="popup-telemetry">
-        <div class="popup-node-title">📡 ${nodeId}</div>
-        <div class="popup-row"><span>Source:</span> <span>${sourceLabel}</span></div>
-        <div class="popup-row"><span>Coordinates:</span> <span>${lat.toFixed(5)}, ${lng.toFixed(5)}</span></div>
-        <div class="popup-row"><span>AQI Index:</span> <span style="color:${colorHex}; font-weight:700;">${aqi}</span></div>
-        <div class="popup-row"><span>PM2.5:</span> <span>${pm25} µg/m³</span></div>
-        <div class="popup-row"><span>PM10:</span> <span>${pm10} µg/m³</span></div>
-        <div class="popup-row"><span>Temperature:</span> <span>${temp} °C</span></div>
-        <div class="popup-row"><span>Humidity:</span> <span>${humidity} %</span></div>
-        <div class="popup-row"><span>Time:</span> <span>${timestamp}</span></div>
-      </div>
-    `;
-
-    // Update or create AoE Circle (100m radius, 40% fill opacity)
-    if (this.aoeCircle) {
-      this.aoeCircle.setLatLng([lat, lng]);
-      this.aoeCircle.setStyle({
-        color: colorHex,
-        fillColor: colorHex,
-        fillOpacity: 0.40,
-        weight: 2
-      });
-      this.aoeCircle.setPopupContent(popupContent);
-    } else {
-      this.aoeCircle = L.circle([lat, lng], {
-        radius: radiusMeters,
-        color: colorHex,
-        weight: 2,
-        fillColor: colorHex,
-        fillOpacity: 0.40
-      }).addTo(this.map);
-      this.aoeCircle.bindPopup(popupContent);
-    }
-
-    // Center icon pin / pulse
-    const centerIcon = L.divIcon({
-      className: "center-pulse-marker",
-      html: `<div style="
-        width: 14px;
-        height: 14px;
-        background-color: ${colorHex};
-        border: 2px solid #ffffff;
-        border-radius: 50%;
-        box-shadow: 0 0 12px ${colorHex};
-      "></div>`,
-      iconSize: [14, 14],
-      iconAnchor: [7, 7]
-    });
-
-    if (this.centerMarker) {
-      this.centerMarker.setLatLng([lat, lng]);
-      this.centerMarker.setIcon(centerIcon);
-    } else {
-      this.centerMarker = L.marker([lat, lng], { icon: centerIcon }).addTo(this.map);
-    }
-
-    // Pan map to new live coordinates
-    if (!this.hasInitialCentered) {
-      this.map.setView([lat, lng], 15);
-      this.hasInitialCentered = true;
-    } else {
-      this.map.panTo([lat, lng], { animate: true, duration: 0.8 });
-    }
-  }
-
-  invalidateSize() {
+    const hardware = validCoordinates(reading.lat, reading.lng);
+    this.currentCoords = hardware ? { lat: reading.lat, lng: reading.lng, label: 'Sensor GPS' } : (reading.node_id ? this.deviceLiveCoords : null);
     if (this.map) {
-      this.map.invalidateSize();
+      if (this.aoeCircle) this.map.removeLayer(this.aoeCircle);
+      if (this.centerMarker) this.map.removeLayer(this.centerMarker);
+      this.aoeCircle = this.centerMarker = null;
+      if (this.currentCoords) {
+        const { lat, lng } = this.currentCoords;
+        this.aoeCircle = L.circle([lat, lng], { radius: 100, color: colorHex, fillOpacity: 0.12, weight: 1 }).addTo(this.map);
+        this.centerMarker = L.circleMarker([lat, lng], { radius: 8, color: '#fff', weight: 3, fillColor: colorHex, fillOpacity: 1 }).addTo(this.map);
+        const popup = document.createElement('div');
+        popup.textContent = `${reading.node_id} · AQI ${reading.aqi} · ${this.currentCoords.label} · ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+        this.centerMarker.bindPopup(popup);
+        if (!this.hasInitialCentered) { this.map.setView([lat, lng], 15); this.hasInitialCentered = true; }
+      }
     }
+    return { coords: this.currentCoords, isHardwareGps: hardware, label: this.currentCoords?.label || 'Sensor GPS unavailable · map centered on Jamnagar' };
   }
+  fitSensor() {
+    if (this.currentCoords) this.map?.setView([this.currentCoords.lat, this.currentCoords.lng], 15);
+    else this.notify('No sensor coordinates yet. Use device location only if you are beside the sensor.');
+  }
+  invalidateSize() { this.map?.invalidateSize(); }
 }
+

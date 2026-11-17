@@ -1,285 +1,130 @@
-/**
- * Main Application Controller
- * Coordinates Data Polling, UI Synchronization, Map Rendering, and Metrics
- */
+import { calculateEnvironmentalScore } from './scoring.js';
+import { AirQualityMap } from './map.js';
+import { TrendsChart } from './chart.js';
+import { getTelemetry, packetAge, ageLabel } from './api.js';
 
-import { calculateEnvironmentalScore } from "./scoring.js";
-import { AirQualityMap } from "./map.js";
-import { TrendsChart } from "./chart.js";
-
+const $ = id => document.getElementById(id);
+const put = (id, value) => { $(id).textContent = value; };
+const number = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
+const display = value => number(value) === null ? '—' : Number(value.toFixed(1)).toString();
 class SmartAirQApp {
   constructor() {
-    // Dynamically resolves to current origin, or falls back to server IP 10.49.96.26:5000
-    this.apiBaseUrl = window.location.origin.includes("5000")
-      ? window.location.origin
-      : (window.location.hostname && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1"
-          ? `http://${window.location.hostname}:5000`
-          : "http://10.49.96.26:5000");
-
-    this.mapManager = null;
-    this.chartManager = null;
-    this.pollIntervalMs = 3000;
-    this.timer = null;
-    this.lastPacketTime = null;
-    this.isServerOnline = false;
-
-    this.dom = {
-      statusDot: document.getElementById("statusDot"),
-      statusText: document.getElementById("statusText"),
-      lastPacketText: document.getElementById("lastPacketText"),
-      globalScoreCircle: document.getElementById("globalScoreCircle"),
-      globalScoreStatus: document.getElementById("globalScoreStatus"),
-      advisoryCard: document.getElementById("advisoryCard"),
-      advisoryTitle: document.getElementById("advisoryTitle"),
-      advisoryText: document.getElementById("advisoryText"),
-      advisoryIcon: document.getElementById("advisoryIcon"),
-      pm25Value: document.getElementById("pm25Value"),
-      pm10Value: document.getElementById("pm10Value"),
-      tempValue: document.getElementById("tempValue"),
-      humidityValue: document.getElementById("humidityValue"),
-      comfortFill: document.getElementById("comfortFill"),
-      comfortLabel: document.getElementById("comfortLabel"),
-      heatIndexText: document.getElementById("heatIndexText"),
-      climatePenaltyBadge: document.getElementById("climatePenaltyBadge"),
-      geoSourceChip: document.getElementById("geoSourceChip"),
-      activeNodeChip: document.getElementById("activeNodeChip"),
-      sensorTimestampChip: document.getElementById("sensorTimestampChip"),
-      btnRefreshGPS: document.getElementById("btnRefreshGPS"),
-      themeToggle: document.getElementById("themeToggle"),
-      btnExport: document.getElementById("btnExport")
-    };
-
-    this.init();
+    this.node = ''; this.limit = 40; this.online = false; this.data = null; this.receivedAt = 0;
+    try { document.documentElement.dataset.theme = localStorage.getItem('smartairq-theme') === 'dark' ? 'dark' : 'light'; } catch {}
+    this.mapManager = new AirQualityMap('map');
+    this.chartManager = new TrendsChart('trendsChart');
+    if (!this.chartManager.chart) put('chartEmpty', 'Chart library unavailable. Readings are available in the table below.');
+    $('themeToggle').addEventListener('click', () => {
+      const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem('smartairq-theme', next); } catch {}
+      this.themeLabel(); this.chartManager.refreshTheme();
+    });
+    this.themeLabel();
+    $('btnFit').addEventListener('click', () => this.mapManager.fitSensor());
+    $('basemap').addEventListener('change', event => this.mapManager.setProvider(event.target.value));
+    $('btnRefreshGPS').addEventListener('click', async () => {
+      const button = $('btnRefreshGPS'); button.disabled = true; button.textContent = 'Locating…';
+      try {
+        await this.mapManager.requestFreshDeviceLocation();
+        if (this.data?.latest) this.renderMetrics(this.data.latest);
+      } finally { button.disabled = false; button.textContent = 'Use my location'; }
+    });
+    $('nodeFilter').addEventListener('change', event => { this.node = event.target.value; this.fetchTelemetry(); });
+    $('historyLimit').addEventListener('change', event => { this.limit = Number(event.target.value); this.fetchTelemetry(); });
+    $('refreshButton').addEventListener('click', () => this.fetchTelemetry());
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) this.fetchTelemetry(); });
+    window.addEventListener('resize', () => this.mapManager.invalidateSize());
+    this.fetchConfig(); this.fetchTelemetry();
+    this.timer = setInterval(() => { if (!document.hidden && !this.pending) this.fetchTelemetry(); }, 3000);
+    this.clock = setInterval(() => this.updateFreshness(), 1000);
+    window.addEventListener('pagehide', () => { clearInterval(this.timer); clearInterval(this.clock); this.controller?.abort(); });
   }
-
-  async init() {
-    this.initTheme();
-    this.mapManager = new AirQualityMap("map");
-    this.chartManager = new TrendsChart("trendsChart");
-    this.bindEvents();
-
-    // Fetch server client config (Carto API Key, basemap style)
-    await this.fetchConfig();
-
-    // Initial fetch and start loop
-    await this.fetchTelemetry();
-    this.startPolling();
-    this.startClockTicker();
-  }
-
+  themeLabel() { $('themeToggle').setAttribute('aria-label', `Switch to ${document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'} theme`); }
   async fetchConfig() {
     try {
-      const res = await fetch(`${this.apiBaseUrl}/api/config`, { cache: "no-store" });
-      if (res.ok) {
-        const config = await res.json();
-        if (config.cartoApiKey || config.cartoMapStyle) {
-          this.mapManager.setCartoConfig(config);
-        }
-      }
-    } catch (e) {
-      console.info("Using default open Carto basemap tiles");
-    }
+      const response = await fetch('/api/config', { signal: AbortSignal.timeout(8000) });
+      if (response.ok) this.mapManager.setCartoConfig(await response.json());
+    } catch { /* OpenStreetMap does not depend on optional configuration. */ }
   }
-
-  bindEvents() {
-    // Theme Switcher
-    if (this.dom.themeToggle) {
-      this.dom.themeToggle.addEventListener("click", () => this.toggleTheme());
-    }
-
-    // CSV Export button direct link
-    if (this.dom.btnExport) {
-      this.dom.btnExport.href = `${this.apiBaseUrl}/api/export-csv`;
-    }
-
-    // Refresh Live Device GPS button
-    if (this.dom.btnRefreshGPS) {
-      this.dom.btnRefreshGPS.addEventListener("click", async () => {
-        if (this.mapManager) {
-          this.dom.btnRefreshGPS.classList.add("active");
-          this.dom.btnRefreshGPS.textContent = "📡 Fetching Live GPS...";
-          const coords = await this.mapManager.requestFreshDeviceLocation();
-          this.dom.btnRefreshGPS.classList.remove("active");
-          this.dom.btnRefreshGPS.textContent = "📡 Refresh Live Device GPS";
-          if (this.dom.geoSourceChip && coords) {
-            this.dom.geoSourceChip.textContent = coords.label || `📍 Live (${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)})`;
-          }
-        }
-      });
-    }
-
-    // Window resize handler for map and chart
-    window.addEventListener("resize", () => {
-      if (this.mapManager) this.mapManager.invalidateSize();
-    });
-  }
-
-  startPolling() {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = setInterval(() => this.fetchTelemetry(), this.pollIntervalMs);
-  }
-
-  startClockTicker() {
-    // Ticker to update "Last packet: X seconds ago" with exact sensor reading time
-    setInterval(() => {
-      if (!this.lastSensorTimestamp) {
-        if (this.dom.lastPacketText) this.dom.lastPacketText.textContent = "Awaiting data...";
-        return;
-      }
-      const elapsedSeconds = this.lastPacketTime
-        ? Math.floor((Date.now() - this.lastPacketTime) / 1000)
-        : 0;
-
-      if (this.dom.lastPacketText) {
-        const timePart = this.lastSensorTimestamp.includes(" ")
-          ? this.lastSensorTimestamp.split(" ")[1]
-          : this.lastSensorTimestamp;
-        if (elapsedSeconds < 4) {
-          this.dom.lastPacketText.textContent = `${timePart} (Just now)`;
-        } else if (elapsedSeconds < 60) {
-          this.dom.lastPacketText.textContent = `${timePart} (${elapsedSeconds}s ago)`;
-        } else {
-          const minutes = Math.floor(elapsedSeconds / 60);
-          this.dom.lastPacketText.textContent = `${timePart} (${minutes}m ago)`;
-        }
-      }
-    }, 1000);
-  }
-
   async fetchTelemetry() {
+    // Abort obsolete requests on filter changes; only the newest result can update the screen.
+    this.controller?.abort();
+    const controller = new AbortController(); this.controller = controller; this.pending = true;
+    $('refreshButton').disabled = true;
     try {
-      const response = await fetch(`${this.apiBaseUrl}/api/map-data?limit=40`, {
-        cache: "no-store"
-      });
-
-      if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
-      const data = await response.json();
-
-      this.setServerStatus(true);
-      if (data.latest) {
-        this.lastPacketTime = Date.now();
-        await this.renderDashboard(data.latest, data.history || []);
-      }
-    } catch (err) {
-      console.warn("Failed fetching map data:", err.message);
-      this.setServerStatus(false);
-    }
+      const data = await getTelemetry({ node: this.node, limit: this.limit, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]) });
+      if (this.controller !== controller) return;
+      this.data = data; this.receivedAt = Date.now(); this.online = true;
+      $('statusDot').className = 'status-dot online'; put('statusText', 'Server connected');
+      this.renderNodes(data.nodes || []);
+      this.renderTable(data.history || []);
+      this.chartManager.updateData(data.history || []);
+      $('chartEmpty').hidden = Boolean(this.chartManager.chart && data.history?.length);
+      if (data.latest) this.renderMetrics(data.latest); else this.renderEmpty();
+      this.updateFreshness();
+    } catch (error) {
+      if (controller.signal.aborted || this.controller !== controller) return;
+      this.online = false;
+      $('statusDot').className = 'status-dot offline'; put('statusText', 'Server disconnected');
+      this.notice('Cannot reach the server. Reconnecting automatically. Any readings shown are from the last successful connection.', true);
+    } finally { if (this.controller === controller) { this.pending = false; $('refreshButton').disabled = false; } }
   }
-
-  setServerStatus(isOnline) {
-    this.isServerOnline = isOnline;
-    if (!this.dom.statusDot) return;
-
-    if (isOnline) {
-      this.dom.statusDot.className = "status-dot online";
-      if (this.dom.statusText) this.dom.statusText.textContent = "Server Online";
-    } else {
-      this.dom.statusDot.className = "status-dot offline";
-      if (this.dom.statusText) this.dom.statusText.textContent = "Server Offline";
-    }
+  notice(text, warning = false) {
+    $('notice').hidden = !text; $('notice').className = warning ? 'notice warning' : 'notice'; put('notice', text);
   }
-
-  async renderDashboard(latest, history) {
-    const aqi = latest.aqi || 0;
-    const temp = latest.temp || 0.0;
-    const humidity = latest.humidity || 0.0;
-    const pm25 = latest.pm25 || 0;
-    const pm10 = latest.pm10 || 0;
-    const nodeId = latest.node_id || "ESP32_Node";
-    const sensorTimestamp = latest.timestamp || "Live";
-
-    this.lastSensorTimestamp = sensorTimestamp;
-    if (this.dom.sensorTimestampChip) {
-      this.dom.sensorTimestampChip.textContent = sensorTimestamp;
-    }
-
-    // 1. Calculate Score & Climate Modifier
-    const scoring = calculateEnvironmentalScore(aqi, temp, humidity);
-
-    // 2. Update Header Environmental Score Badge
-    if (this.dom.globalScoreCircle) {
-      this.dom.globalScoreCircle.textContent = scoring.score;
-      this.dom.globalScoreCircle.style.backgroundColor = scoring.color;
-      this.dom.globalScoreCircle.style.boxShadow = `0 0 16px ${scoring.aqiColorHex}66`;
-    }
-    if (this.dom.globalScoreStatus) {
-      this.dom.globalScoreStatus.textContent = `${scoring.category} (${scoring.score}/10)`;
-    }
-
-    // 3. Update Health Advisory Card
-    if (this.dom.advisoryCard) {
-      this.dom.advisoryCard.style.borderLeftColor = scoring.aqiColorHex;
-      this.dom.advisoryCard.style.background = `linear-gradient(135deg, ${scoring.aqiColorHex}15, transparent)`;
-    }
-    if (this.dom.advisoryTitle) {
-      this.dom.advisoryTitle.textContent = scoring.advisoryTitle;
-      this.dom.advisoryTitle.style.color = scoring.aqiColorHex;
-    }
-    if (this.dom.advisoryText) {
-      this.dom.advisoryText.textContent = scoring.advisoryText;
-    }
-
-    // 4. Update Live Metrics Grid
-    if (this.dom.pm25Value) this.dom.pm25Value.textContent = pm25;
-    if (this.dom.pm10Value) this.dom.pm10Value.textContent = pm10;
-    if (this.dom.tempValue) this.dom.tempValue.textContent = temp.toFixed(1);
-    if (this.dom.humidityValue) this.dom.humidityValue.textContent = humidity.toFixed(1);
-
-    // 5. Update Climate & Comfort View
-    if (this.dom.comfortFill) {
-      this.dom.comfortFill.style.width = `${scoring.climateAssessment.percent}%`;
-    }
-    if (this.dom.comfortLabel) {
-      this.dom.comfortLabel.textContent = scoring.climateAssessment.label;
-    }
-    if (this.dom.heatIndexText) {
-      this.dom.heatIndexText.textContent = `${scoring.climateAssessment.heatIndex} °C`;
-    }
-    if (this.dom.climatePenaltyBadge) {
-      if (scoring.penaltyApplied) {
-        this.dom.climatePenaltyBadge.style.display = "block";
-        this.dom.climatePenaltyBadge.textContent = "⚠️ Climate Penalty Applied (-1 score: High heat & humidity)";
-      } else {
-        this.dom.climatePenaltyBadge.style.display = "none";
-      }
-    }
-
-    // 6. Update Active Node Chip
-    if (this.dom.activeNodeChip) {
-      this.dom.activeNodeChip.textContent = `Node: ${nodeId}`;
-    }
-
-    // 7. Update Map with AoE Zone & Geolocation Fallback
-    if (this.mapManager) {
-      const geoResult = await this.mapManager.updateTelemetryLocation(latest, scoring.aqiColorHex);
-      if (this.dom.geoSourceChip && geoResult) {
-        this.dom.geoSourceChip.textContent = geoResult.isHardwareGps
-          ? "🛰️ Hardware GPS"
-          : (geoResult.label || "📍 Jamnagar Fallback");
-      }
-    }
-
-    // 8. Update Historical Trends Chart
-    if (this.chartManager && history.length) {
-      this.chartManager.updateData(history);
-    }
+  renderNodes(nodes) {
+    const selected = this.node;
+    const options = [new Option('All sensor nodes', ''), ...nodes.map(node => new Option(node.node_id, node.node_id))];
+    $('nodeFilter').replaceChildren(...options); $('nodeFilter').value = selected;
   }
-
-  initTheme() {
-    const savedTheme = localStorage.getItem("smartairq-theme") || "dark";
-    document.documentElement.setAttribute("data-theme", savedTheme);
+  renderMetrics(latest) {
+    for (const key of ['aqi', 'pm25', 'pm10', 'temp', 'humidity']) put(`${key}Value`, display(latest[key]));
+    put('detailNode', latest.node_id); put('activeNodeChip', latest.node_id);
+    put('sensorTimestampChip', latest.timestamp || 'Timestamp unavailable');
+    const scoring = calculateEnvironmentalScore(latest.aqi, latest.temp, latest.humidity);
+    put('globalScoreCircle', scoring.score ?? '—'); put('globalScoreStatus', scoring.category);
+    put('aqiCategory', scoring.category);
+    $('scoreRing').style.setProperty('--score-angle', `${(scoring.score || 0) * 28}deg`);
+    $('scoreRing').style.setProperty('--score-color', scoring.aqiColorHex);
+    put('advisoryTitle', scoring.advisoryTitle); put('advisoryText', scoring.advisoryText);
+    put('comfortLabel', scoring.climateAssessment.label);
+    put('heatIndexText', `${display(scoring.climateAssessment.heatIndex)} °C`);
+    $('climatePenaltyBadge').hidden = !scoring.penaltyApplied;
+    const geo = this.mapManager.updateTelemetryLocation(latest, scoring.aqiColorHex);
+    put('geoSourceChip', geo.label);
   }
-
-  toggleTheme() {
-    const current = document.documentElement.getAttribute("data-theme") || "dark";
-    const next = current === "dark" ? "light" : "dark";
-    document.documentElement.setAttribute("data-theme", next);
-    localStorage.setItem("smartairq-theme", next);
-    if (this.chartManager) this.chartManager.refreshTheme();
+  renderEmpty() {
+    for (const id of ['aqiValue','pm25Value','pm10Value','tempValue','humidityValue','globalScoreCircle','detailNode']) put(id, '—');
+    put('activeNodeChip', 'No sensor selected'); put('sensorTimestampChip', 'Awaiting data');
+    put('globalScoreStatus', 'Waiting for a reading'); put('aqiCategory', 'Awaiting data');
+    put('comfortLabel', 'Awaiting climate data'); put('heatIndexText', '—');
+    put('advisoryTitle', 'Ready when your sensors are.');
+    put('advisoryText', 'Connect an ESP32 node to see your latest air quality and climate readings here.');
+    $('scoreRing').style.setProperty('--score-angle', '0deg'); $('climatePenaltyBadge').hidden = true;
+    const geo = this.mapManager.updateTelemetryLocation({lat:0,lng:0}); put('geoSourceChip', geo.label);
+  }
+  updateFreshness() {
+    const latest = this.data?.latest;
+    const age = packetAge(latest?.timestamp, this.data?.server_time, this.receivedAt);
+    put('lastPacketText', latest ? ageLabel(age) : 'No readings');
+    if (!this.online) return;
+    if (!latest) this.notice('Your workspace is ready. Waiting for telemetry from an ESP32 sensor node.');
+    else if (age === null || age > 60) this.notice(`Sensor data is ${ageLabel(age)}. Values shown are the last received measurements.`, true);
+    else this.notice('');
+  }
+  renderTable(history) {
+    put('readingCount', history.length);
+    const body = $('readingsBody'); body.replaceChildren();
+    if (!history.length) {
+      const row = body.insertRow(); const cell = row.insertCell(); cell.colSpan = 7; cell.className = 'empty-cell';
+      cell.textContent = 'No readings yet. Connect a sensor to start monitoring.'; return;
+    }
+    for (const item of [...history].reverse()) {
+      const row = body.insertRow();
+      const values = [item.node_id, item.timestamp, display(item.aqi), display(item.pm25), display(item.pm10), `${display(item.temp)} °C`, `${display(item.humidity)} %`];
+      for (const value of values) row.insertCell().textContent = value ?? '—';
+    }
   }
 }
-
-// Bootstrap application on DOM ready
-document.addEventListener("DOMContentLoaded", () => {
-  window.appInstance = new SmartAirQApp();
-});
+window.appInstance = new SmartAirQApp();

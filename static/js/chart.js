@@ -29,26 +29,26 @@ export class TrendsChart {
           {
             label: "PM2.5 (µg/m³)",
             data: [],
-            borderColor: "#38bdf8",
-            backgroundColor: "rgba(56, 189, 248, 0.15)",
+            borderColor: "#279b81",
+            backgroundColor: "rgba(39, 155, 129, 0.07)",
             borderWidth: 2,
             tension: 0.35,
             fill: true,
             yAxisID: "yPM",
-            pointRadius: 1,
+            pointRadius: 0,
             pointHoverRadius: 5
           },
           {
             label: "Temp (°C)",
             data: [],
-            borderColor: "#f97316",
+            borderColor: "#d6a269",
             backgroundColor: "transparent",
             borderWidth: 2,
             borderDash: [4, 4],
             tension: 0.35,
             fill: false,
             yAxisID: "yTemp",
-            pointRadius: 1,
+            pointRadius: 0,
             pointHoverRadius: 5
           }
         ]
@@ -66,7 +66,7 @@ export class TrendsChart {
             position: "top",
             align: "end",
             labels: {
-              boxWidth: 10,
+              boxWidth: 8,
               boxHeight: 10,
               color: textColor,
               font: { size: 10, weight: 600 }
@@ -100,7 +100,7 @@ export class TrendsChart {
             title: {
               display: true,
               text: "PM2.5 (µg/m³)",
-              color: "#38bdf8",
+              color: "#279b81",
               font: { size: 9, weight: 600 }
             },
             grid: { color: gridColor },
@@ -113,7 +113,7 @@ export class TrendsChart {
             title: {
               display: true,
               text: "Temp (°C)",
-              color: "#f97316",
+              color: "#d6a269",
               font: { size: 9, weight: 600 }
             },
             grid: { drawOnChartArea: false },
@@ -125,7 +125,7 @@ export class TrendsChart {
   }
 
   updateData(historyReadings) {
-    if (!this.chart || !historyReadings || !historyReadings.length) return;
+    if (!this.chart || !historyReadings) return;
 
     // Extract formatted time labels (HH:MM or MM/DD HH:MM)
     const labels = historyReadings.map((r) => {
