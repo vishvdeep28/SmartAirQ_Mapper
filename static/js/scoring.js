@@ -5,9 +5,9 @@ export function calculateEnvironmentalScore(aqi, temp, humidity) {
     advisoryTitle: 'No valid AQI reading', advisoryText: 'Check the sensor connection to restore the environment indicator.',
     climateAssessment: { label: 'Unavailable', heatIndex: null }
   };
-  const baseScore = aqi <= 25 ? 10 : aqi <= 38 ? 9 : aqi <= 50 ? 8 : aqi <= 68 ? 7 : aqi <= 85 ? 6 : aqi <= 100 ? 5 : aqi <= 125 ? 4 : aqi <= 150 ? 3 : aqi <= 200 ? 2 : 1;
+  const baseScore = aqi <= 25 ? 10 : aqi <= 50 ? 9 : aqi <= 75 ? 8 : aqi <= 100 ? 7 : aqi <= 150 ? 6 : aqi <= 200 ? 5 : aqi <= 250 ? 4 : aqi <= 300 ? 3 : aqi <= 350 ? 2 : aqi <= 400 ? 1 : 0;
   const penaltyApplied = temp > 35 && humidity > 85;
-  const score = Math.max(1, baseScore - Number(penaltyApplied));
+  const score = Math.max(0, baseScore - Number(penaltyApplied));
   const category = score >= 9 ? 'Excellent' : score >= 7 ? 'Good' : score >= 5 ? 'Moderate' : score >= 3 ? 'Needs attention' : 'Elevated pollution';
   const aqiColorHex = score >= 9 ? '#16866d' : score >= 7 ? '#47977c' : score >= 5 ? '#c4a04d' : score >= 3 ? '#d58a50' : '#cf655a';
   let heatIndex = typeof temp === 'number' && Number.isFinite(temp) ? temp : null;

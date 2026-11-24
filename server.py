@@ -14,6 +14,39 @@ load_dotenv(ENV_PATH)
 # Initialize Flask with static folder configured
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
+def detect_local_ip():
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '127.0.0.1'
+
+def calculate_aqi_from_pm25(pm25):
+    """Compute standard EPA AQI score from PM2.5 in ug/m3 if not supplied."""
+    c = float(pm25)
+    if c <= 0:
+        return 0
+    elif c <= 12.0:
+        return round(((50 - 0) / (12.0 - 0.0)) * (c - 0.0) + 0)
+    elif c <= 35.4:
+        return round(((100 - 51) / (35.4 - 12.1)) * (c - 12.1) + 51)
+    elif c <= 55.4:
+        return round(((150 - 101) / (55.4 - 35.5)) * (c - 35.5) + 101)
+    elif c <= 150.4:
+        return round(((200 - 151) / (150.4 - 55.5)) * (c - 55.5) + 151)
+    elif c <= 250.4:
+        return round(((300 - 201) / (250.4 - 150.5)) * (c - 150.5) + 201)
+    elif c <= 350.4:
+        return round(((400 - 301) / (350.4 - 250.5)) * (c - 250.5) + 301)
+    elif c <= 500.4:
+        return round(((500 - 401) / (500.4 - 350.5)) * (c - 350.5) + 401)
+    else:
+        return 500
+
 DB_PATH = os.environ.get('SMARTAIRQ_DB_PATH', os.path.join(os.path.dirname(__file__), 'air_quality.db'))
 
 def get_db_connection():
@@ -73,6 +106,8 @@ def receive_data():
         pm25 = number('pm25', 0, 0, 100000)
         pm10 = number('pm10', 0, 0, 100000)
         aqi = number('aqi', 0, 0, 1000)
+        if aqi == 0 and pm25 > 0:
+            aqi = calculate_aqi_from_pm25(pm25)
         temp = number('temp', 0, -100, 100)
         humidity = number('humidity', 0, 0, 100)
     except (TypeError, ValueError, OverflowError) as error:
@@ -188,7 +223,9 @@ init_db()
 if __name__ == '__main__':
     host = os.environ.get('SERVER_HOST', '0.0.0.0')
     port = int(os.environ.get('SERVER_PORT', 5000))
-    server_ip = os.environ.get('SERVER_IP', '<your-computer-LAN-IP>')
+    server_ip = os.environ.get('SERVER_IP', '').strip()
+    if not server_ip or server_ip == '<your-computer-LAN-IP>':
+        server_ip = detect_local_ip()
 
     print("=" * 65)
     print("Starting Local Flask Server for Smart Air Quality Mapper...")
